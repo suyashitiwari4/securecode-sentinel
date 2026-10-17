@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.pytest_cache/
+*.sqlite
+
+# scan outputs (regenerate these locally)
+semgrep_report.json
+gitleaks_report.json
