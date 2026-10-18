@@ -8,3 +8,7 @@ __pycache__/
 # scan outputs (regenerate these locally)
 semgrep_report.json
 gitleaks_report.json
+
+# Generated security scan reports
+combined_report.json
+reports/
