@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+httpx
+pytest
+semgrep
+sqlalchemy
+psycopg[binary]
+alembic
+python-dotenv

@@ -1,26 +1,30 @@
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
+from app.db import get_db
+from app.model import Finding, Scan
 from app.services.runner import run_scanners
 from app.services.scanner import parse_gitleaks, parse_semgrep
 
 ROOT = Path(__file__).resolve().parent.parent
 REPORTS_DIR = ROOT / "reports"
-
-# Only these folders may be scanned. Never accept arbitrary paths from a client.
-ALLOWED_TARGETS = [ROOT / "sample_vuln"]
+ALLOWED_TARGETS = [ROOT / "sample_vuln"]  # never scan arbitrary client paths
 
 app = FastAPI(title="SecureCode Sentinel")
-
-SCANS = {}  # in-memory for now; replaced by PostgreSQL next
 
 
 class ScanRequest(BaseModel):
     target: str = "sample_vuln"
+
+
+class FindingUpdate(BaseModel):
+    status: Literal["OPEN", "FIXED", "FALSE_POSITIVE", "ACCEPTED_RISK"]
 
 
 def resolve_target(raw):
@@ -32,8 +36,23 @@ def resolve_target(raw):
     return target
 
 
-def summarize(scan):
-    return {k: scan[k] for k in ("id", "target", "status", "created_at", "finding_count")}
+def finding_dict(f):
+    return {
+        "id": f.id, "scan_id": f.scan_id, "scanner": f.scanner, "rule_id": f.rule_id,
+        "severity": f.severity, "file": f.file, "line": f.line, "title": f.title,
+        "message": f.message, "evidence": f.evidence, "status": f.status,
+    }
+
+
+def scan_dict(s, with_findings=False):
+    data = {
+        "id": s.id, "target": s.target, "status": s.status,
+        "created_at": s.created_at.isoformat(), "errors": s.errors,
+        "finding_count": len(s.findings),
+    }
+    if with_findings:
+        data["findings"] = [finding_dict(f) for f in s.findings]
+    return data
 
 
 @app.get("/health")
@@ -42,47 +61,63 @@ def health():
 
 
 @app.post("/api/scans", status_code=201)
-def create_scan(body: ScanRequest):
+def create_scan(body: ScanRequest, db: Session = Depends(get_db)):
     target = resolve_target(body.target)
     scan_id = str(uuid.uuid4())
 
     results = run_scanners(target_dir=target, output_dir=REPORTS_DIR / scan_id)
 
-    findings, errors = [], {}
+    parsed, errors = [], {}
     if results["semgrep"]["success"]:
-        findings += parse_semgrep(results["semgrep"]["report_path"])
+        parsed += parse_semgrep(results["semgrep"]["report_path"])
     else:
         errors["semgrep"] = results["semgrep"].get("error")
     if results["gitleaks"]["success"]:
-        findings += parse_gitleaks(results["gitleaks"]["report_path"], source_dir=target)
+        parsed += parse_gitleaks(results["gitleaks"]["report_path"], source_dir=target)
     else:
         errors["gitleaks"] = results["gitleaks"].get("error")
 
-    for i, f in enumerate(findings, start=1):
-        f["id"] = i
-
     status = "completed" if not errors else ("failed" if len(errors) == 2 else "partial")
-    scan = {
-        "id": scan_id,
-        "target": body.target,
-        "status": status,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "finding_count": len(findings),
-        "errors": errors,
-        "findings": findings,
-    }
-    SCANS[scan_id] = scan
-    return scan
+    scan = Scan(id=scan_id, target=body.target, status=status, errors=errors)
+    scan.findings = [
+        Finding(**{k: f[k] for k in (
+            "scanner", "rule_id", "severity", "file", "line",
+            "title", "message", "evidence", "status")})
+        for f in parsed
+    ]
+    db.add(scan)
+    db.commit()
+    db.refresh(scan)
+    return scan_dict(scan, with_findings=True)
 
 
 @app.get("/api/scans")
-def list_scans():
-    return [summarize(s) for s in SCANS.values()]
+def list_scans(db: Session = Depends(get_db)):
+    scans = db.scalars(select(Scan).order_by(Scan.created_at.desc())).all()
+    return [scan_dict(s) for s in scans]
 
 
 @app.get("/api/scans/{scan_id}")
-def get_scan(scan_id: str):
-    scan = SCANS.get(scan_id)
+def get_scan(scan_id: str, db: Session = Depends(get_db)):
+    scan = db.get(Scan, scan_id)
     if scan is None:
         raise HTTPException(status_code=404, detail="Scan not found")
-    return scan
+    return scan_dict(scan, with_findings=True)
+
+
+@app.get("/api/findings/{finding_id}")
+def get_finding(finding_id: int, db: Session = Depends(get_db)):
+    finding = db.get(Finding, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="Finding not found")
+    return finding_dict(finding)
+
+
+@app.patch("/api/findings/{finding_id}")
+def update_finding(finding_id: int, body: FindingUpdate, db: Session = Depends(get_db)):
+    finding = db.get(Finding, finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail="Finding not found")
+    finding.status = body.status
+    db.commit()
+    return finding_dict(finding)

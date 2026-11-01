@@ -12,3 +12,4 @@ gitleaks_report.json
 # Generated security scan reports
 combined_report.json
 reports/
+.env
