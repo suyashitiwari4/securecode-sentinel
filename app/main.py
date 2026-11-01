@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.model import Finding, Scan
+from app.models import Finding, Scan
 from app.services.runner import run_scanners
 from app.services.scanner import parse_gitleaks, parse_semgrep
 
