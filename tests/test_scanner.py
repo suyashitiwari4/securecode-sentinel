@@ -94,3 +94,16 @@ def test_combine_reports(tmp_path):
 
     assert [f["scanner"] for f in findings] == ["Semgrep", "Gitleaks"]
     assert findings[0]["severity"] == "MEDIUM"   # WARNING -> MEDIUM
+from app.services.scanner import make_fingerprint
+
+
+def test_fingerprint_ignores_line_numbers():
+    a = {"scanner": "Semgrep", "rule_id": "r", "file": "x.py", "evidence": "eval(x)", "line": 3}
+    b = {**a, "line": 40}
+    assert make_fingerprint(a) == make_fingerprint(b)
+
+
+def test_fingerprint_differs_by_rule():
+    a = {"scanner": "Semgrep", "rule_id": "r1", "file": "x.py", "evidence": "eval(x)"}
+    b = {**a, "rule_id": "r2"}
+    assert make_fingerprint(a) != make_fingerprint(b)

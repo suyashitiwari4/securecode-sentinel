@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import hashlib
 
 SEVERITY_MAP = {"ERROR": "HIGH", "WARNING": "MEDIUM", "INFO": "LOW"}
 
@@ -82,6 +83,20 @@ def main():
     out.write_text(json.dumps(findings, indent=2), encoding="utf-8")
     print(f"Total findings: {len(findings)}")
     print(f"Combined report saved to: {out.resolve()}")
+
+def make_fingerprint(finding, base_dir=None):
+    """Stable ID for a finding: same issue in the same file => same fingerprint.
+    Line numbers are deliberately excluded, since they shift when code moves."""
+    path = finding["file"]
+    if base_dir:
+        try:
+            path = str(Path(path).resolve().relative_to(Path(base_dir).resolve()))
+        except ValueError:
+            pass
+    path = path.replace("\\", "/")
+    evidence = " ".join(finding.get("evidence", "").split())
+    raw = "|".join([finding["scanner"], finding["rule_id"], path, evidence])
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 if __name__ == "__main__":
